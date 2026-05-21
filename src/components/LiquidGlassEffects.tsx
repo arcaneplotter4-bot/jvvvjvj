@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom';
 import * as THREE from 'three';
 import { UICustomization } from '../types';
-import { getCachedVideo, cacheVideo } from '../utils/videoCache';
+import { getCachedVideo } from '../utils/videoCache';
 
 interface LiquidGlassProps {
   isDark: boolean;
@@ -20,6 +20,8 @@ export const LiquidGlassBackground: React.FC<LiquidGlassProps> = ({ accentColor,
   const videoContainerRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(false);
   const lastMousePos = useRef<{x: number, y: number} | null>(null);
+  const loadedTextureRef = useRef<THREE.Texture | null>(null);
+  const loadedAspectRef = useRef<number>(1.5);
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -60,8 +62,6 @@ export const LiquidGlassBackground: React.FC<LiquidGlassProps> = ({ accentColor,
   }, [customization]);
 
   useEffect(() => {
-    if (!uniformsRef.current) return;
-    
     let active = true;
     const defaultBg = 'https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?q=80&w=2000&auto=format&fit=crop';
     let isVideo = false;
@@ -71,11 +71,96 @@ export const LiquidGlassBackground: React.FC<LiquidGlassProps> = ({ accentColor,
       targetUrl = 'https://www.image2url.com/r2/default/videos/1777332216669-d60eb0bf-c6e4-4fa5-ad6c-9f5bc02a8954.mp4';
       isVideo = true;
     } else if (accentColor.startsWith('liquid-glass-custom-')) {
-      targetUrl = accentColor;
       isVideo = true;
     }
 
-        const loadContent = async () => {
+    const loadContent = async () => {
+      if (isVideo) {
+        if (!videoRef.current) {
+          const video = document.createElement('video');
+          video.crossOrigin = 'anonymous';
+          video.loop = true;
+          video.muted = true;
+          video.playsInline = true;
+          video.autoplay = true;
+          video.className = "w-full h-full object-cover";
+          video.setAttribute('muted', '');
+          video.setAttribute('playsinline', '');
+          video.setAttribute('autoplay', '');
+          videoRef.current = video;
+        }
+
+        if (videoContainerRef.current && !videoContainerRef.current.contains(videoRef.current)) {
+          videoContainerRef.current.appendChild(videoRef.current);
+        }
+
+        let mediaUrl = targetUrl;
+        if (accentColor === 'liquid-glass-blue') {
+          mediaUrl = '/api/proxy?url=' + encodeURIComponent(targetUrl);
+        } else if (accentColor.startsWith('liquid-glass-custom-')) {
+          const cacheData = await getCachedVideo(accentColor);
+          if (cacheData?.url) {
+            mediaUrl = cacheData.url;
+          }
+        }
+
+        if (!active) return;
+
+        if (mediaUrl || accentColor.startsWith('liquid-glass-custom-')) {
+          videoRef.current.src = mediaUrl;
+          videoRef.current.load();
+          videoRef.current.play().catch((err) => {
+            console.warn('Autoplay prevented or failed:', err);
+          });
+
+          const tex = new THREE.VideoTexture(videoRef.current);
+          tex.minFilter = THREE.LinearFilter;
+          tex.magFilter = THREE.LinearFilter;
+          
+          loadedTextureRef.current = tex;
+          if (uniformsRef.current) {
+            uniformsRef.current.uBgTex.value = tex;
+          }
+
+          const checkSize = () => {
+             if (videoRef.current && videoRef.current.videoWidth > 0) {
+               const aspect = videoRef.current.videoWidth / videoRef.current.videoHeight;
+               loadedAspectRef.current = aspect;
+               if (uniformsRef.current) {
+                 uniformsRef.current.uBgAspect.value = aspect;
+               }
+             } else if (active) {
+               requestAnimationFrame(checkSize);
+             }
+          };
+          checkSize();
+        }
+      } else {
+        if (videoRef.current) {
+          videoRef.current.pause();
+          videoRef.current.src = "";
+          if (videoContainerRef.current && videoContainerRef.current.contains(videoRef.current)) {
+            videoContainerRef.current.removeChild(videoRef.current);
+          }
+        }
+        new THREE.TextureLoader().load(defaultBg, (tex) => {
+          if (!active) return;
+          tex.minFilter = THREE.LinearFilter;
+          tex.magFilter = THREE.LinearFilter;
+          
+          loadedTextureRef.current = tex;
+          loadedAspectRef.current = tex.image.width / tex.image.height;
+          if (uniformsRef.current) {
+            uniformsRef.current.uBgTex.value = tex;
+            uniformsRef.current.uBgAspect.value = loadedAspectRef.current;
+          }
+        });
+      }
+    };
+
+    /* Bypassed old caching/proxy logic
+    const unusedBypassPlaceholder = async () => {
+      return;
       if (isVideo) {
         setLoading(true);
         const proxyUrl = '/api/proxy?url=' + encodeURIComponent(targetUrl);
@@ -177,6 +262,7 @@ export const LiquidGlassBackground: React.FC<LiquidGlassProps> = ({ accentColor,
         });
       }
     };
+    */
 
     loadContent();
 
@@ -432,6 +518,10 @@ export const LiquidGlassBackground: React.FC<LiquidGlassProps> = ({ accentColor,
       depthTest: false,
     });
     uniformsRef.current = material.uniforms;
+    if (loadedTextureRef.current) {
+      material.uniforms.uBgTex.value = loadedTextureRef.current;
+      material.uniforms.uBgAspect.value = loadedAspectRef.current;
+    }
 
     scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material));
 
