@@ -75,6 +75,24 @@ export const LiquidGlassBackground: React.FC<LiquidGlassProps> = ({ accentColor,
     }
 
     const loadContent = async () => {
+      // 1. ALWAYS load the beautiful static defaultBg image immediately as our baseline / fallback!
+      // This ensures uBgTex gets populated instantly, eliminating the black screen.
+      new THREE.TextureLoader().load(defaultBg, (tex) => {
+        if (!active) return;
+        tex.minFilter = THREE.LinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        
+        // Only set as current texture if we haven't already successfully linked a VideoTexture.
+        if (!loadedTextureRef.current || !(loadedTextureRef.current instanceof THREE.VideoTexture)) {
+          loadedTextureRef.current = tex;
+          loadedAspectRef.current = tex.image.width / tex.image.height;
+          if (uniformsRef.current) {
+            uniformsRef.current.uBgTex.value = tex;
+            uniformsRef.current.uBgAspect.value = loadedAspectRef.current;
+          }
+        }
+      });
+
       if (isVideo) {
         if (!videoRef.current) {
           const video = document.createElement('video');
@@ -95,8 +113,20 @@ export const LiquidGlassBackground: React.FC<LiquidGlassProps> = ({ accentColor,
         }
 
         let mediaUrl = targetUrl;
+        
+        // Auto-detect if we are on server-backed environments vs static hosts like Netlify.
+        // /api/proxy?url=... will result in 404 in static hosting setups.
+        const isSelfHosted = window.location.hostname.includes('localhost') || 
+                             window.location.hostname.includes('127.0.0.1') || 
+                             window.location.hostname.includes('run.app');
+        
         if (accentColor === 'liquid-glass-blue') {
-          mediaUrl = '/api/proxy?url=' + encodeURIComponent(targetUrl);
+          if (isSelfHosted) {
+            mediaUrl = '/api/proxy?url=' + encodeURIComponent(targetUrl);
+          } else {
+            // Static hosting like Netlify: try direct URL first (relying on target CORS policy if open).
+            mediaUrl = targetUrl;
+          }
         } else if (accentColor.startsWith('liquid-glass-custom-')) {
           const cacheData = await getCachedVideo(accentColor);
           if (cacheData?.url) {
@@ -109,31 +139,63 @@ export const LiquidGlassBackground: React.FC<LiquidGlassProps> = ({ accentColor,
         if (mediaUrl || accentColor.startsWith('liquid-glass-custom-')) {
           videoRef.current.src = mediaUrl;
           videoRef.current.load();
-          videoRef.current.play().catch((err) => {
-            console.warn('Autoplay prevented or failed:', err);
-          });
-
-          const tex = new THREE.VideoTexture(videoRef.current);
-          tex.minFilter = THREE.LinearFilter;
-          tex.magFilter = THREE.LinearFilter;
           
-          loadedTextureRef.current = tex;
-          if (uniformsRef.current) {
-            uniformsRef.current.uBgTex.value = tex;
+          let playPromise = videoRef.current.play();
+          if (playPromise !== undefined) {
+            playPromise.then(() => {
+              if (!active) return;
+              
+              const tex = new THREE.VideoTexture(videoRef.current!);
+              tex.minFilter = THREE.LinearFilter;
+              tex.magFilter = THREE.LinearFilter;
+              
+              loadedTextureRef.current = tex;
+              if (uniformsRef.current) {
+                uniformsRef.current.uBgTex.value = tex;
+              }
+
+              const checkSize = () => {
+                 if (videoRef.current && videoRef.current.videoWidth > 0) {
+                   const aspect = videoRef.current.videoWidth / videoRef.current.videoHeight;
+                   loadedAspectRef.current = aspect;
+                   if (uniformsRef.current) {
+                     uniformsRef.current.uBgAspect.value = aspect;
+                   }
+                 } else if (active) {
+                   requestAnimationFrame(checkSize);
+                 }
+              };
+              checkSize();
+            }).catch((err) => {
+              console.warn('Video play was rejected or prevented:', err);
+              // Safe fallback is already fully rendered!
+            });
           }
 
-          const checkSize = () => {
-             if (videoRef.current && videoRef.current.videoWidth > 0) {
-               const aspect = videoRef.current.videoWidth / videoRef.current.videoHeight;
-               loadedAspectRef.current = aspect;
-               if (uniformsRef.current) {
-                 uniformsRef.current.uBgAspect.value = aspect;
-               }
-             } else if (active) {
-               requestAnimationFrame(checkSize);
-             }
+          // Attach a robust loading error listener to automatically revert to fallback or retry raw.
+          const handleVideoError = () => {
+            console.warn('Video loading error encountered at:', mediaUrl);
+            if (mediaUrl.includes('/api/proxy') && videoRef.current) {
+              console.log('Proxy failed. Retrying direct load from original targetURL...');
+              mediaUrl = targetUrl;
+              videoRef.current.src = targetUrl;
+              videoRef.current.load();
+              videoRef.current.play().then(() => {
+                if (!active) return;
+                const tex = new THREE.VideoTexture(videoRef.current!);
+                tex.minFilter = THREE.LinearFilter;
+                tex.magFilter = THREE.LinearFilter;
+                loadedTextureRef.current = tex;
+                if (uniformsRef.current) {
+                  uniformsRef.current.uBgTex.value = tex;
+                }
+              }).catch((e) => {
+                console.warn('All attempts to load background video failed:', e);
+                // Safe static fallback was already loaded and remains active!
+              });
+            }
           };
-          checkSize();
+          videoRef.current.addEventListener('error', handleVideoError);
         }
       } else {
         if (videoRef.current) {
@@ -143,18 +205,6 @@ export const LiquidGlassBackground: React.FC<LiquidGlassProps> = ({ accentColor,
             videoContainerRef.current.removeChild(videoRef.current);
           }
         }
-        new THREE.TextureLoader().load(defaultBg, (tex) => {
-          if (!active) return;
-          tex.minFilter = THREE.LinearFilter;
-          tex.magFilter = THREE.LinearFilter;
-          
-          loadedTextureRef.current = tex;
-          loadedAspectRef.current = tex.image.width / tex.image.height;
-          if (uniformsRef.current) {
-            uniformsRef.current.uBgTex.value = tex;
-            uniformsRef.current.uBgAspect.value = loadedAspectRef.current;
-          }
-        });
       }
     };
 
